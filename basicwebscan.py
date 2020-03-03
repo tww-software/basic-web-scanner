@@ -2,6 +2,7 @@
 nmap scan and then run scanners against any web server ports found
 """
 
+
 import argparse
 import collections
 import json
@@ -36,12 +37,9 @@ class WebScanners():
         """
         run all scanners
         """
-        try:
-            self.run_nikto()
-            self.run_whatweb()
-            self.run_dirb()
-        except CommandError:
-            ENUMLOG.exception('error running command against %s', self.url)
+        self.run_nikto()
+        self.run_whatweb()
+        self.run_dirb()
 
     def run_nikto(self):
         """
@@ -53,8 +51,11 @@ class WebScanners():
         """
         ENUMLOG.info('running nikto against %s', self.url)
         savelog = os.path.join(self.outputdir, 'nikto.html')
-        run_command(['nikto', '-Tuning', 'x6', '-o', savelog, '-Format',
-                     'htm', '-timeout', '4', '-h', self.url])
+        try:
+            run_command(['nikto', '-Tuning', 'x6', '-o', savelog, '-Format',
+                         'htm', '-timeout', '4', '-h', self.url])
+        except CommandError:
+            ENUMLOG.error('error running nikto against %s', self.url)
 
     def run_whatweb(self):
         """
@@ -63,8 +64,11 @@ class WebScanners():
         ENUMLOG.info('running whatweb against %s', self.url)
         savelog = os.path.join(self.outputdir, 'whatweb.txt')
         logargs = '--log-verbose={}'.format(savelog)
-        run_command(['whatweb', '-q', '-a', '3', logargs, self.url])
-        
+        try:
+            run_command(['whatweb', '-a', '3', logargs, self.url])
+        except CommandError as err:
+            ENUMLOG.error(str(err))
+
     def run_dirb(self):
         """
         run dirb to find hidden web objects, basically do a dictionary attack
@@ -72,11 +76,15 @@ class WebScanners():
         """
         ENUMLOG.info('running dirb against %s', self.url)
         savelog = os.path.join(self.outputdir, 'dirb.txt')
-        run_command(['dirb', self.url, '/usr/share/wordlists/dirb/small.txt',
-                     '-o', savelog, '-S'])
+        try:
+            run_command(['dirb', self.url,
+                         '/usr/share/wordlists/dirb/small.txt',
+                         '-o', savelog, '-r'])
+        except CommandError:
+            ENUMLOG.error('error running dirb against %s', self.url)
 
 
-class nmapScanner():
+class NmapScanner():
     """class for the nmap scanner"""
 
     def __init__(self, target, outputdirpath):
@@ -95,7 +103,7 @@ class nmapScanner():
         -PY SCTP ping
         -PE ICMP ping
         -PR ARP ping
-        
+
         scan options
         -A  aggressive OS & service detection
         -sS SYN scan
@@ -106,15 +114,15 @@ class nmapScanner():
         cliargs = ('-PS -PA -PU -PY -PE -PR -A -sS -T 5 -v -p-'
                    ' --max-retries 4 --open')
         ENUMLOG.info('initial tcp port scan started')
-        nmpTCP = nmap.PortScanner()
-        scanresults = nmpTCP.scan(
+        nmptcp = nmap.PortScanner()
+        scanresults = nmptcp.scan(
             hosts=self.target,
             arguments=cliargs)
         jsonpath = os.path.join(self.outputdirpath, 'initialTCPscan.json')
         save_json_output(scanresults, jsonpath)
         csvpath = os.path.join(self.outputdirpath, 'initialscan_TCP.csv')
         with open(csvpath, 'w') as csvf:
-            csvf.write(nmpTCP.csv())
+            csvf.write(nmptcp.csv())
         ENUMLOG.debug(scanresults['nmap']['command_line'])
         ENUMLOG.info('intial tcp port scan finished')
         return scanresults
@@ -122,12 +130,17 @@ class nmapScanner():
     def filter_results(self, scanresults):
         """
         filter results for further enumeration
+
+        Args:
+            scanresults(dict): the nmap scan results from the initial_scan
+                               method
         """
         ENUMLOG.info('filtering scan results for futher enumeration')
         for host in scanresults['scan']:
             for port in scanresults['scan'][host]['tcp']:
                 if scanresults['scan'][host]['tcp'][port]['state'] == 'open':
-                    if scanresults['scan'][host]['tcp'][port]['name'] == 'http':
+                    if scanresults['scan'][host]['tcp'][port]['name'] == \
+                            'http':
                         self.webservers[host].append(port)
 
     def enum_http(self):
@@ -136,7 +149,7 @@ class nmapScanner():
         """
         for webserver in self.webservers:
             for port in self.webservers[webserver]:
-                outstr = 'webvunscan-{}-TCP{}'.format(webserver,str(port))
+                outstr = 'webvunscan-{}-TCP{}'.format(webserver, str(port))
                 weboutput = os.path.join(self.outputdirpath, outstr)
                 if not os.path.exists(weboutput):
                     os.makedirs(weboutput)
@@ -144,12 +157,11 @@ class nmapScanner():
                 httpscheck = nmp.scan(
                     hosts=webserver, arguments='-Pn --script=+ssl-cert',
                     ports=str(port))
-                try:
-                    https = httpscheck['scan'][webserver]['tcp'][port]['script']
+                if 'script' in httpscheck['scan'][webserver]['tcp'][port]:
                     ENUMLOG.info('%s port %s is using https',
                                  webserver, str(port))
                     weburl = 'https://{}:{}'.format(webserver, str(port))
-                except KeyError:
+                else:
                     ENUMLOG.info('%s port %s is using http',
                                  webserver, str(port))
                     weburl = 'http://{}:{}'.format(webserver, str(port))
@@ -160,7 +172,7 @@ class nmapScanner():
 def save_json_output(indict, outjsonpath):
     """
     save a python dictionary as json to a file
-    
+
     Args:
         indict(dict): dictionary to save into the JSON file
         outjsonpath(str): full path to save the JSON file to
@@ -180,20 +192,28 @@ def run_command(argslist):
         CommandError: exception if there is output to standard error
 
     Returns:
-        completed.stdout(str): the standard output of the command
+        command.stdout(str): the standard output of the command
     """
-    completed = subprocess.run(argslist, stderr=subprocess.PIPE,
+    command = subprocess.Popen(
+        argslist, stderr=subprocess.PIPE,
         stdout=subprocess.PIPE, universal_newlines=True)
-    if completed.stderr:
-        raise CommandError(completed.stderr)
-    else:
-        return completed.stdout
+    while True:
+        output = command.stdout.readline()
+        if output == '' and command.poll() is not None:
+            break
+        if output:
+            print(output.strip())
+    ENUMLOG.debug(
+        '"%s" exited with code %s', ' '.join(argslist), command.returncode)
+    if command.returncode != 0:
+        raise CommandError(command.stderr)
+    return command.stdout
 
 
 def setup_logging(logfilepath):
     """
     setup logging to a file and the terminal
-    
+
     Args:
         logfilepath(str): where to save the log file to
     """
@@ -223,8 +243,8 @@ def main():
                         help='directory to output results into')
     args = parser.parse_args()
     setup_logging(os.path.join(args.outputdir, 'pentest.log'))
-    ENUMLOG.info('started scan of ' + args.target)
-    nmapscanner = nmapScanner(args.target, args.outputdir)
+    ENUMLOG.info('started scan of %s', args.target)
+    nmapscanner = NmapScanner(args.target, args.outputdir)
     scanresults = nmapscanner.initial_scan()
     nmapscanner.filter_results(scanresults)
     nmapscanner.enum_http()
