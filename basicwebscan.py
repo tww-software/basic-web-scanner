@@ -242,6 +242,8 @@ def main():
     parser.add_argument(dest='outputdir',
                         help='directory to output results into')
     args = parser.parse_args()
+    if not os.path.exists(args.outputdir):
+        os.makedirs(args.outputdir)
     setup_logging(os.path.join(args.outputdir, 'pentest.log'))
     ENUMLOG.info('started scan of %s', args.target)
     nmapscanner = NmapScanner(args.target, args.outputdir)
